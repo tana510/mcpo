@@ -140,6 +140,43 @@ Each tool will be accessible under its own unique route, e.g.:
 
 Each with a dedicated OpenAPI schema and proxy handler. Access full schema UI at: `http://localhost:8000/<tool>/docs`  (e.g. /memory/docs, /time/docs)
 
+### 🧾 Client Header Forwarding Whitelist
+
+If you want mcpo to forward only selected incoming client headers to a backend MCP server (SSE or streamable-http), configure `client_header_forwarding` per server in your config file.
+
+Example:
+
+```json
+{
+  "mcpServers": {
+    "mcp_streamable_http": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:8002/mcp",
+      "client_header_forwarding": {
+        "enabled": true,
+        "whitelist": [
+          "authorization",
+          "x-request-id",
+          "x-trace-*"
+        ],
+        "blacklist": [
+          "cookie"
+        ],
+        "debug_headers": false
+      }
+    }
+  }
+}
+```
+
+Rules:
+
+- `enabled`: Must be `true` to activate forwarding.
+- `whitelist`: Headers to allow. Supports exact names and prefix wildcards like `x-trace-*`.
+- `blacklist`: Headers to block even if they match the whitelist.
+- Matching is case-insensitive for both exact and wildcard patterns.
+- If `whitelist` is empty, all headers are eligible except those blocked by `blacklist`.
+
 ### 🔐 OAuth 2.1 Authentication
 
 mcpo supports OAuth 2.1 authentication for MCP servers that require it. The implementation defaults to **dynamic client registration**, so most servers only need minimal configuration:

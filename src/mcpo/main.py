@@ -26,7 +26,10 @@ from mcpo.utils.main import (
     normalize_server_type,
 )
 from mcpo.utils.config_watcher import ConfigWatcher
-from mcpo.utils.headers import validate_client_header_forwarding_config
+from mcpo.utils.headers import (
+    create_header_forwarding_client_factory,
+    validate_client_header_forwarding_config,
+)
 from mcpo.utils.oauth import create_oauth_provider
 
 
@@ -69,6 +72,7 @@ class MCPConnectionManager:
         headers: Optional[Dict[str, str]],
         connection_timeout: Optional[int],
         auth_provider: Optional[Any] = None,
+        header_forwarding_enabled: bool = False,
     ):
         self.server_type = normalize_server_type(server_type)
         self.command = command
@@ -84,6 +88,10 @@ class MCPConnectionManager:
         self._initialize_lock = asyncio.Lock()
         self._initialize_result = None
         self._initialized = False
+
+        self._header_forwarding_enabled = header_forwarding_enabled
+        self._per_request_headers: Dict[str, str] = {}
+        self._per_request_headers_lock = asyncio.Lock()
 
     @property
     def current_session(self) -> Optional[ClientSession]:
@@ -120,6 +128,21 @@ class MCPConnectionManager:
     async def close(self):
         async with self._lock:
             await self._close_session_locked()
+
+    @asynccontextmanager
+    async def forwarding_headers(self, headers: Dict[str, str]):
+        """Context manager that injects per-request headers into the HTTP transport.
+        Serializes concurrent calls when header forwarding is active to prevent
+        headers from one request leaking into another."""
+        if headers and self._header_forwarding_enabled:
+            async with self._per_request_headers_lock:
+                self._per_request_headers.update(headers)
+                try:
+                    yield
+                finally:
+                    self._per_request_headers.clear()
+        else:
+            yield
 
     async def _open_session_locked(self):
         client_context = self._create_client_context()
@@ -170,18 +193,27 @@ class MCPConnectionManager:
                 env={**os.environ, **self.env},
             )
             return stdio_client(server_params)
+
+        extra_kwargs = {}
+        if self._header_forwarding_enabled:
+            extra_kwargs["httpx_client_factory"] = (
+                create_header_forwarding_client_factory(self._per_request_headers)
+            )
+
         if self.server_type == "sse":
             timeout = self.connection_timeout or 900
             return sse_client(
                 url=self.args[0],
                 sse_read_timeout=timeout,
                 headers=self.headers,
+                **extra_kwargs,
             )
         if self.server_type == "streamable-http":
             return streamablehttp_client(
                 url=self.args[0],
                 headers=self.headers,
                 auth=self.auth_provider,
+                **extra_kwargs,
             )
         raise ValueError(f"Unsupported server type: {self.server_type}")
 
@@ -703,6 +735,9 @@ async def lifespan(app: FastAPI):
                 logger.warning("OAuth not supported for SSE server type")
 
             headers = getattr(app.state, "headers", None)
+            client_header_forwarding = getattr(
+                app.state, "client_header_forwarding", {}
+            )
             session_manager = MCPConnectionManager(
                 server_type=server_type,
                 command=command,
@@ -711,6 +746,9 @@ async def lifespan(app: FastAPI):
                 headers=headers,
                 connection_timeout=connection_timeout,
                 auth_provider=auth_provider,
+                header_forwarding_enabled=client_header_forwarding.get(
+                    "enabled", False
+                ),
             )
             app.state.session_manager = session_manager
 

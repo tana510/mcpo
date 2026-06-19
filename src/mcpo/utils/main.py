@@ -283,7 +283,9 @@ def get_tool_handler(
     client_header_forwarding_config=None,
 ):
     async def call_tool_with_reconnect(
-        request: Request, arguments: Dict[str, Any]
+        request: Request,
+        arguments: Dict[str, Any],
+        forwarded_headers: Optional[Dict[str, str]] = None,
     ) -> CallToolResult:
         session_manager = getattr(request.app.state, "session_manager", None)
 
@@ -291,26 +293,29 @@ def get_tool_handler(
             return await session.call_tool(endpoint_name, arguments=arguments)
 
         if session_manager:
-            try:
-                session, _ = await session_manager.ensure_initialized()
-            except ClosedResourceError:
-                logger.warning(
-                    "Session closed while initializing '%s'; attempting reconnect",
-                    endpoint_name,
-                )
-                session, _ = await session_manager.reconnect()
-            request.app.state.session = session
-
-            try:
-                return await _invoke(session)
-            except ClosedResourceError:
-                logger.warning(
-                    "Session closed during call to '%s'; attempting reconnect",
-                    endpoint_name,
-                )
-                session, _ = await session_manager.reconnect()
+            async with session_manager.forwarding_headers(
+                forwarded_headers or {}
+            ):
+                try:
+                    session, _ = await session_manager.ensure_initialized()
+                except ClosedResourceError:
+                    logger.warning(
+                        "Session closed while initializing '%s'; attempting reconnect",
+                        endpoint_name,
+                    )
+                    session, _ = await session_manager.reconnect()
                 request.app.state.session = session
-                return await _invoke(session)
+
+                try:
+                    return await _invoke(session)
+                except ClosedResourceError:
+                    logger.warning(
+                        "Session closed during call to '%s'; attempting reconnect",
+                        endpoint_name,
+                    )
+                    session, _ = await session_manager.reconnect()
+                    request.app.state.session = session
+                    return await _invoke(session)
 
         session = getattr(request.app.state, "session", None)
         if not session:
@@ -343,13 +348,11 @@ def get_tool_handler(
                     request, client_header_forwarding_config
                 )
 
-            meta = {}
-            if forwarded_headers:
-                meta["headers"] = forwarded_headers
-
             logger.info(f"Calling endpoint: {endpoint_name}, with args: {args}")
             try:
-                result = await call_tool_with_reconnect(request, args)
+                result = await call_tool_with_reconnect(
+                    request, args, forwarded_headers
+                )
 
                 if result.isError:
                     error_message = "Unknown tool execution error"
@@ -403,13 +406,9 @@ def get_tool_handler(
                 request, client_header_forwarding_config
             )
 
-        meta = {}
-        if forwarded_headers:
-            meta["headers"] = forwarded_headers
-
         logger.info(f"Calling endpoint: {endpoint_name}, with no args")
         try:
-            result = await call_tool_with_reconnect(request, {})
+            result = await call_tool_with_reconnect(request, {}, forwarded_headers)
 
             if result.isError:
                 error_message = "Unknown tool execution error"

@@ -1,6 +1,8 @@
 import logging
 import re
 from typing import Dict, List, Optional, Any
+
+import httpx
 from fastapi import Request
 
 logger = logging.getLogger(__name__)
@@ -33,16 +35,17 @@ def validate_client_header_forwarding_config(server_name: str, config: Dict[str,
 
 
 def match_header_pattern(header_name: str, patterns: List[str]) -> bool:
-    """Check if header name matches any of the given patterns."""
+    """Check if header name matches any of the given patterns (case-insensitive)."""
+    header_lower = header_name.lower()
     for pattern in patterns:
         if pattern == "*":
             return True
-        if pattern.endswith("*"):
-            # Wildcard pattern like "X-User-*"
-            prefix = pattern[:-1]
-            if header_name.startswith(prefix):
+        pattern_lower = pattern.lower()
+        if pattern_lower.endswith("*"):
+            prefix = pattern_lower[:-1]
+            if header_lower.startswith(prefix):
                 return True
-        elif pattern == header_name:
+        elif pattern_lower == header_lower:
             return True
     return False
 
@@ -95,5 +98,42 @@ def process_headers_for_server(
     
     if debug_headers:
         logger.debug(f"Final forwarded headers: {list(filtered_headers.keys())}")
-    
+
     return filtered_headers
+
+
+def create_header_forwarding_client_factory(
+    per_request_headers: Dict[str, str],
+):
+    """Create an httpx client factory that injects per-request forwarded headers
+    via event hooks. The factory reads from the provided mutable dict at request
+    time, allowing the caller to populate it before each MCP call."""
+
+    def factory(
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[httpx.Timeout] = None,
+        auth: Optional[httpx.Auth] = None,
+    ) -> httpx.AsyncClient:
+        async def inject_forwarded_headers(request: httpx.Request):
+            for key, value in per_request_headers.items():
+                request.headers[key] = value
+
+        kwargs: Dict[str, Any] = {
+            "follow_redirects": True,
+            "event_hooks": {"request": [inject_forwarded_headers]},
+        }
+
+        if timeout is None:
+            kwargs["timeout"] = httpx.Timeout(30.0)
+        else:
+            kwargs["timeout"] = timeout
+
+        if headers is not None:
+            kwargs["headers"] = headers
+
+        if auth is not None:
+            kwargs["auth"] = auth
+
+        return httpx.AsyncClient(**kwargs)
+
+    return factory

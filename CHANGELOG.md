@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.0.21] - 2026-06-19
+
+### Added
+
+* 🔀 **Per-Request Header Injection for HTTP MCP Transports**: Added an HTTP client factory for SSE and Streamable HTTP transports that injects forwarded client headers at request time, enabling request-scoped propagation without changing global transport headers.
+
+### Changed
+
+* 🔒 **Serialized Forwarded Header Scope in Reconnect-Aware Calls**: MCP tool execution now wraps reconnect and invocation flow in a forwarding-headers context with locking so concurrent requests do not leak forwarded headers across sessions.
+
+### Fixed
+
+* 🔤 **Case-Insensitive Header Pattern Matching**: Client header forwarding pattern matching now compares header names and wildcard prefixes case-insensitively, ensuring configured patterns consistently match real-world HTTP header casing.
+
 ## [0.0.20] - 2026-02-27
 
 ### Added
